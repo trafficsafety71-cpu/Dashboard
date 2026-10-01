@@ -261,13 +261,19 @@
   .map-layer-btn.active{background:var(--primary);border-color:var(--primary);color:#fff;}
   .map-layer-sep{width:1px;align-self:stretch;background:var(--border);margin:0 2px;}
   #mapHeatToggle.active{background:#B71C1C;border-color:#B71C1C;color:#fff;}
-  .map-heat-controls{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12.5px;color:var(--text-dim);}
-  .map-heat-controls input[type=range]{flex:1;max-width:220px;}
-  .map-heat-controls #mapHeatRadiusVal{min-width:22px;text-align:center;color:var(--text);font-weight:700;}
+  .map-heat-controls{display:flex;flex-wrap:wrap;gap:10px 22px;margin-bottom:10px;font-size:12.5px;color:var(--text-dim);}
+  .map-heat-row{display:flex;align-items:center;gap:8px;}
+  .map-heat-row input[type=range]{width:130px;}
+  .map-heat-row span{min-width:30px;text-align:center;color:var(--text);font-weight:700;}
   .map-legend-heat{gap:10px;}
   .heat-gradient-bar{display:inline-block;width:120px;height:10px;border-radius:5px;
     background:linear-gradient(90deg,#FFEA00,#FF9800,#FF3D00,#D50000,#330000);}
   .leaflet-popup-content-wrapper, .leaflet-popup-tip{background:var(--surface);color:var(--text);}
+  .leaflet-control-fullscreen-btn{font-size:16px;text-decoration:none;}
+  #chartMap:fullscreen, #chartMap:-webkit-full-screen{width:100%!important;height:100%!important;}
+  #chartMap.map-fake-fullscreen{position:fixed!important;inset:0!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;z-index:9999!important;border-radius:0!important;}
+  body.map-fake-fullscreen-active{overflow:hidden;}
+  .leaflet-control-fullscreen-btn{width:30px!important;height:30px!important;line-height:30px!important;font-size:16px!important;}
   .leaflet-container{background:var(--surface-2);font-family:inherit;}
   .map-note{font-size:12.5px;color:var(--text-dim);line-height:1.6;margin:0 0 12px;}
   .map-links-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;}
@@ -569,9 +575,26 @@
           <button class="map-layer-btn" type="button" id="mapHeatToggle">خريطة حرارية</button>
         </div>
         <div class="map-heat-controls" id="mapHeatControls" hidden>
-          <label for="mapHeatRadius">قطر الاحتساب حول كل حادث</label>
-          <input type="range" id="mapHeatRadius" min="10" max="60" step="1" value="25">
-          <span id="mapHeatRadiusVal">25</span>
+          <div class="map-heat-row">
+            <label for="mapHeatRadius">القطر</label>
+            <input type="range" id="mapHeatRadius" min="10" max="100" step="1" value="25">
+            <span id="mapHeatRadiusVal">25</span>
+          </div>
+          <div class="map-heat-row">
+            <label for="mapHeatBlur">الطمس</label>
+            <input type="range" id="mapHeatBlur" min="1" max="50" step="1" value="15">
+            <span id="mapHeatBlurVal">15</span>
+          </div>
+          <div class="map-heat-row">
+            <label for="mapHeatOpacity">الشفافية</label>
+            <input type="range" id="mapHeatOpacity" min="0" max="100" step="1" value="85">
+            <span id="mapHeatOpacityVal">85%</span>
+          </div>
+          <div class="map-heat-row">
+            <label for="mapHeatMaxZoom">أقصى تكبير للتأثير</label>
+            <input type="range" id="mapHeatMaxZoom" min="10" max="20" step="1" value="17">
+            <span id="mapHeatMaxZoomVal">17</span>
+          </div>
         </div>
         <div class="chart-box xl"><div id="chartMap"></div></div>
         <div class="map-legend" id="mapLegendPoints">
@@ -1520,7 +1543,80 @@
   };
   var HEAT_GRADIENT = { 0.0:'#FFEA00', 0.3:'#FF9800', 0.5:'#FF3D00', 0.75:'#D50000', 1.0:'#330000' };
   var _leafletMap = null, _leafletLayers = {}, _leafletBoundaryLayer = null, _leafletMarkersLayer = null;
-  var _leafletHeatLayer = null, _heatMode = false, _heatRadius = 25, _lastMapPts = [];
+  var _leafletHeatLayer = null, _heatMode = false, _lastMapPts = [];
+  var _heatRadius = 25, _heatBlur = 15, _heatOpacityPct = 85, _heatMaxZoom = 17;
+
+  // Custom fullscreen control for the map. Uses the native Fullscreen API
+  // where supported (desktop browsers, most Android browsers). iOS Safari
+  // does not support requestFullscreen() on arbitrary elements, so when
+  // that API is missing we fall back to a CSS position:fixed "fake
+  // fullscreen" that covers the viewport instead — works everywhere,
+  // including iPhone/iPad.
+  function addFullscreenControl(map, container){
+    var FullscreenControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function(){
+        var wrap = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        var link = L.DomUtil.create('a', 'leaflet-control-fullscreen-btn', wrap);
+        link.href = '#';
+        link.title = 'عرض الخريطة بملء الشاشة';
+        link.setAttribute('role', 'button');
+        link.setAttribute('aria-label', 'ملء الشاشة');
+        link.innerHTML = '⛶';
+        var nativeSupported = !!(container.requestFullscreen || container.webkitRequestFullscreen);
+        var fakeActive = false;
+
+        function isNativeFullscreen(){
+          return !!(document.fullscreenElement || document.webkitFullscreenElement);
+        }
+        function setIcon(active){ link.innerHTML = active ? '✕' : '⛶'; }
+        function afterToggle(){
+          setTimeout(function(){ map.invalidateSize(); }, 80);
+        }
+        function enterFake(){
+          container.classList.add('map-fake-fullscreen');
+          document.body.classList.add('map-fake-fullscreen-active');
+          fakeActive = true;
+          setIcon(true);
+          afterToggle();
+          document.addEventListener('keydown', onEscFake);
+        }
+        function exitFake(){
+          container.classList.remove('map-fake-fullscreen');
+          document.body.classList.remove('map-fake-fullscreen-active');
+          fakeActive = false;
+          setIcon(false);
+          afterToggle();
+          document.removeEventListener('keydown', onEscFake);
+        }
+        function onEscFake(e){ if(e.key === 'Escape') exitFake(); }
+
+        L.DomEvent.on(link, 'click', function(e){
+          L.DomEvent.stop(e);
+          if(nativeSupported){
+            if(!isNativeFullscreen()){
+              (container.requestFullscreen || container.webkitRequestFullscreen).call(container);
+            } else {
+              (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+            }
+          } else {
+            if(fakeActive) exitFake(); else enterFake();
+          }
+        });
+
+        if(nativeSupported){
+          ['fullscreenchange', 'webkitfullscreenchange'].forEach(function(evt){
+            document.addEventListener(evt, function(){
+              setIcon(isNativeFullscreen());
+              afterToggle();
+            });
+          });
+        }
+        return wrap;
+      }
+    });
+    map.addControl(new FullscreenControl());
+  }
 
   function initLeafletMap(){
     if(_leafletMap || typeof L === 'undefined') return;
@@ -1538,6 +1634,8 @@
     _leafletMarkersLayer = L.layerGroup().addTo(_leafletMap);
     try{ _leafletMap.fitBounds(_leafletBoundaryLayer.getBounds(), { padding:[20,20] }); }
     catch(e){ _leafletMap.setView([26.42, 50.0], 11); }
+
+    addFullscreenControl(_leafletMap, container);
 
     // Base layer switch (streets/satellite/hybrid) — scoped to buttons that
     // carry data-layer, so the separate heatmap toggle button (same
@@ -1565,8 +1663,18 @@
     var heatControls = el('mapHeatControls');
     var radiusInput = el('mapHeatRadius');
     var radiusVal = el('mapHeatRadiusVal');
+    var blurInput = el('mapHeatBlur');
+    var blurVal = el('mapHeatBlurVal');
+    var opacityInput = el('mapHeatOpacity');
+    var opacityVal = el('mapHeatOpacityVal');
+    var maxZoomInput = el('mapHeatMaxZoom');
+    var maxZoomVal = el('mapHeatMaxZoomVal');
     var legendPoints = el('mapLegendPoints');
     var legendHeat = el('mapLegendHeat');
+    // Sync the sliders' initial displayed values/state to match the JS
+    // defaults above (radius 25 / blur 15 / opacity 85% / max zoom 17).
+    if(opacityInput){ opacityInput.value = String(_heatOpacityPct); }
+    if(opacityVal){ opacityVal.textContent = _heatOpacityPct + '%'; }
     if(heatBtn){
       heatBtn.addEventListener('click', function(){
         _heatMode = !_heatMode;
@@ -1584,6 +1692,35 @@
         if(_heatMode) updateMapLayerMode();
       });
     }
+    if(blurInput){
+      blurInput.addEventListener('input', function(){
+        _heatBlur = parseInt(blurInput.value, 10) || 15;
+        if(blurVal) blurVal.textContent = String(_heatBlur);
+        if(_heatMode) updateMapLayerMode();
+      });
+    }
+    if(opacityInput){
+      opacityInput.addEventListener('input', function(){
+        _heatOpacityPct = parseInt(opacityInput.value, 10) || 0;
+        if(opacityVal) opacityVal.textContent = _heatOpacityPct + '%';
+        if(_heatMode) applyHeatOpacity();
+      });
+    }
+    if(maxZoomInput){
+      maxZoomInput.addEventListener('input', function(){
+        _heatMaxZoom = parseInt(maxZoomInput.value, 10) || 17;
+        if(maxZoomVal) maxZoomVal.textContent = String(_heatMaxZoom);
+        if(_heatMode) updateMapLayerMode();
+      });
+    }
+  }
+
+  // leaflet.heat renders onto a single <canvas> it manages internally; it
+  // has no first-class opacity option, so the "الشفافية" slider is applied
+  // directly to that canvas element's CSS opacity after the layer exists.
+  function applyHeatOpacity(){
+    if(!_leafletHeatLayer || !_leafletHeatLayer._canvas) return;
+    _leafletHeatLayer._canvas.style.opacity = String(_heatOpacityPct / 100);
   }
 
   function updateMapLayerMode(){
@@ -1605,8 +1742,9 @@
       if(_leafletHeatLayer) _leafletMap.removeLayer(_leafletHeatLayer);
       var heatPoints = _lastMapPts.map(function(r){ return [r.lat, r.lng, 0.6]; });
       _leafletHeatLayer = L.heatLayer(heatPoints, {
-        radius: _heatRadius, blur: Math.round(_heatRadius * 0.6), maxZoom: 17, gradient: HEAT_GRADIENT
+        radius: _heatRadius, blur: _heatBlur, maxZoom: _heatMaxZoom, gradient: HEAT_GRADIENT
       }).addTo(_leafletMap);
+      applyHeatOpacity();
     } else {
       if(_leafletHeatLayer && _leafletMap.hasLayer(_leafletHeatLayer)) _leafletMap.removeLayer(_leafletHeatLayer);
       if(!_leafletMap.hasLayer(_leafletMarkersLayer)) _leafletMarkersLayer.addTo(_leafletMap);
